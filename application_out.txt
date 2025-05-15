@@ -1,0 +1,2488 @@
+### .gitignore
+# Python-specific ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+dist/
+build/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+*.mo
+*.pot
+*.log
+local_settings.py
+*.sqlite3
+*.db
+instance/
+
+# Project-specific ignores
+cache-and-logs/
+latex_clipboard.log
+configs/defaults.json
+
+# LaTeX-specific ignores
+*.aux
+*.bbl
+*.blg
+*.dvi
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.lot
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.png
+test_latex.png
+temp.tex
+temp.dvi
+temp.png
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Miscellaneous
+*.bak
+*.backup
+*.tmp
+*.temp
+*.swp
+*.swo
+*.swn
+
+### application_in.txt
+'''
+project_root/
+├── main.py
+├── src/
+│   ├── __init__.py
+│   ├── gui/
+│   │   ├── __init__.py
+│   │   ├── app_gui.py
+│   │   └── components.py
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── clipboard.py
+│   │   ├── image.py
+│   │   └── latex.py
+│   └── config/
+│       ├── __init__.py
+│       └── settings.py
+└── cache-and-logs/
+    └── latex_clipboard.log
+'''
+
+### requirements.txt
+'''python
+matplotlib
+Pillow
+pywin32
+python-docx
+'''
+### run.bat
+'''python
+@echo off
+ECHO Setting up and running LaTeX Clipboard Application...
+
+:: Check if Python is installed
+where python >nul 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Python is not installed or not in PATH. Please install Python 3.8+.
+    pause
+    exit /b 1
+)
+
+:: Create virtual environment if it doesn't exist
+IF NOT EXIST "venv" (
+    ECHO Creating virtual environment...
+    python -m venv venv
+    IF %ERRORLEVEL% NEQ 0 (
+        ECHO Failed to create virtual environment.
+        pause
+        exit /b 1
+    )
+)
+
+:: Activate virtual environment
+CALL venv\Scripts\activate.bat
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to activate virtual environment.
+    pause
+    exit /b 1
+)
+
+:: Install dependencies
+ECHO Installing dependencies from requirements.txt...
+pip install -r requirements.txt
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to install dependencies.
+    pause
+    exit /b 1
+)
+
+:: Run the application
+ECHO Starting LaTeX Clipboard Application...
+python main.py
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Application failed to start.
+    pause
+    exit /b 1
+)
+
+:: Deactivate virtual environment
+deactivate
+ECHO Application closed.
+pause'''
+
+### main.py
+'''python
+import ctypes
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+import tkinter as tk
+from src.config.settings import LOGGING_CONFIG, RC_PARAMS
+from src.gui.app_gui import LatexClipboardApp
+
+rcParams.update(RC_PARAMS)
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = LatexClipboardApp(root)
+    root.mainloop()
+'''
+
+### src/gui/app_gui.py
+'''python
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
+import sys
+import logging
+import os
+import json
+from .components import create_settings_frame, create_actions_frame, create_io_frame
+from src.utils.clipboard import set_clipboard_html, get_clipboard_text
+from src.utils.latex import check_latex, find_latex_equations
+from src.utils.image import render_latex_to_image
+from src.config.settings import configure_logging
+
+class LatexClipboardApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("LaTeX Clipboard Monitor")
+        self.monitoring = False
+        self.monitor_thread = None
+        self.stop_event = threading.Event()
+        self.last_images = []
+        self.last_text = ""
+        self.last_equations = None
+        self.defaults_file = os.path.join("configs", "defaults.json")
+        self.logger_enabled = tk.BooleanVar(value=True)
+
+        if not check_latex():
+            messagebox.showerror("LaTeX Not Found", "LaTeX distribution (e.g., MiKTeX) with latex and dvipng required.")
+            sys.exit(1)
+
+        configure_logging(self.logger_enabled.get())
+        self.load_defaults()
+        self.root.state('normal')
+        self.root.attributes('-topmost', True)
+        self.root.update()
+        self.root.attributes('-topmost', False)
+        self.root.focus_force()
+
+        self.create_gui()
+        logging.info("Application initialized.")
+
+    def load_defaults(self):
+        defaults = {
+            "mode": "Matplotlib",
+            "text_color": "white",
+            "font_size": "12",
+            "dpi": "300",
+            "only_images": False,
+            "logger_enabled": True
+        }
+        try:
+            if os.path.exists(self.defaults_file):
+                with open(self.defaults_file, 'r') as f:
+                    loaded = json.load(f)
+                defaults.update({k: v for k, v in loaded.items() if k in defaults})
+                logging.info(f"Loaded defaults: {defaults}")
+            else:
+                logging.info("Using fallback defaults")
+        except Exception as e:
+            logging.error(f"Failed to load defaults: {e}")
+        self.default_settings = defaults
+        self.logger_enabled.set(defaults["logger_enabled"])
+
+    def save_defaults(self, settings):
+        try:
+            os.makedirs(os.path.dirname(self.defaults_file), exist_ok=True)
+            with open(self.defaults_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+            logging.info(f"Saved defaults: {settings}")
+        except Exception as e:
+            logging.error(f"Failed to save defaults: {e}")
+            messagebox.showerror("Save Defaults Failed", f"Error: {e}")
+
+    def create_gui(self):
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self.settings_frame = create_settings_frame(main_frame, self.default_settings, self.logger_enabled, self.validate_inputs)
+        self.actions_frame = create_actions_frame(main_frame, self.toggle_monitoring, self.test_render, self.save_as_docx, self.open_defaults_dialog)
+        self.io_frame, self.text_input, self.status_var = create_io_frame(main_frame, self.render_input_text)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def validate_inputs(self, font_size_var, dpi_var):
+        try:
+            font_size = int(font_size_var.get())
+            dpi = int(dpi_var.get())
+            if not (10 <= font_size <= 50):
+                raise ValueError("Font size must be 10-50")
+            if not (100 <= dpi <= 600):
+                raise ValueError("DPI must be 100-600")
+            return True
+        except ValueError as e:
+            logging.error(f"Input validation failed: {e}")
+            messagebox.showerror("Invalid Input", str(e))
+            return False
+
+    def toggle_monitoring(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.monitoring:
+            if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+                return
+            self.monitoring = True
+            self.status_var.set("Monitoring")
+            self.actions_frame.toggle_button.configure(text="Stop Monitoring")
+            self.disable_gui()
+            self.stop_event.clear()
+            self.root.after(1000, self.start_monitor_thread)
+            logging.info("Started clipboard monitoring")
+        else:
+            self.monitoring = False
+            self.status_var.set("Stopped")
+            self.actions_frame.toggle_button.configure(text="Start Monitoring")
+            self.enable_gui()
+            self.stop_event.set()
+            logging.info("Stopped clipboard monitoring")
+
+    def disable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="disabled")
+
+    def enable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="normal")
+
+    def start_monitor_thread(self):
+        self.monitor_thread = threading.Thread(target=self.monitor_clipboard, daemon=True)
+        self.monitor_thread.start()
+
+    def render_input_text(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        text = self.text_input.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showwarning("No Input", "Please enter text to render.")
+            return
+        self.process_text(text, "input")
+
+    def test_render(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        from templates.test_string import TEST_STRING
+        self.process_text(TEST_STRING, "test")
+
+    def process_text(self, text, mode):
+        logging.info(f"Rendering {mode} text: {text[:100]}...")
+        try:
+            equations = find_latex_equations(text)
+            images = [
+                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                for eq in equations['equations']
+            ]
+            images = [img for img in images if img]
+            if images:
+                self.copy_images(images, mode == "test", text, equations)
+                self.status_var.set(f"Copied {len(images)} images")
+                messagebox.showinfo(f"{mode.capitalize()} Render", f"Copied {len(images)} images")
+            else:
+                self.status_var.set("No valid images")
+                messagebox.showerror(f"{mode.capitalize()} Render", "Failed to render images")
+        except Exception as e:
+            logging.error(f"{mode.capitalize()} render failed: {e}")
+            messagebox.showerror(f"{mode.capitalize()} Render Failed", f"Error: {e}")
+            self.status_var.set(f"{mode.capitalize()} render failed")
+
+    def save_as_docx(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.last_images:
+            messagebox.showwarning("No Images", "No images available to save.")
+            return
+        from docx import Document
+        from docx.shared import Pt
+        import filedialog
+        file_path = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Documents", "*.docx")])
+        if not file_path:
+            return
+        try:
+            doc = Document()
+            only_images = self.settings_frame.only_images_var.get()
+            if only_images or not self.last_text or not self.last_equations['matches']:
+                for img in self.last_images:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        img.save(tmp.name, format='PNG')
+                        doc.add_picture(tmp.name, width=Pt(300))
+                        os.unlink(tmp.name)
+            else:
+                last_pos = 0
+                img_index = 0
+                font_size = int(self.settings_frame.font_size_var.get())
+                for match in self.last_equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = self.last_text[last_pos:start].strip()
+                    if text_segment:
+                        doc.add_paragraph(text_segment).runs[0].font.size = Pt(font_size)
+                    if img_index < len(self.last_images):
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                            self.last_images[img_index].save(tmp.name, format='PNG')
+                            doc.add_paragraph().add_run().add_picture(tmp.name, width=Pt(300))
+                            os.unlink(tmp.name)
+                        img_index += 1
+                    last_pos = end
+                if remaining := self.last_text[last_pos:].strip():
+                    doc.add_paragraph(remaining).runs[0].font.size = Pt(font_size)
+            doc.save(file_path)
+            logging.info(f"Saved DOCX to {file_path}")
+            messagebox.showinfo("Save Successful", f"Saved to {file_path}")
+            os.startfile(file_path)
+        except Exception as e:
+            logging.error(f"Failed to save DOCX: {e}")
+            messagebox.showerror("Save Failed", f"Error: {e}")
+
+    def open_defaults_dialog(self):
+        configure_logging(self.logger_enabled.get())
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Set Default Settings")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding="15")
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        vars = {
+            "mode": tk.StringVar(value=self.default_settings["mode"]),
+            "text_color": tk.StringVar(value=self.default_settings["text_color"]),
+            "font_size": tk.StringVar(value=self.default_settings["font_size"]),
+            "dpi": tk.StringVar(value=self.default_settings["dpi"]),
+            "only_images": tk.BooleanVar(value=self.default_settings["only_images"]),
+            "logger_enabled": tk.BooleanVar(value=self.default_settings["logger_enabled"])
+        }
+
+        ttk.Label(frame, text="Default Render Mode:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["mode"], self.default_settings["mode"], "Matplotlib", "Standalone").grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Text Color:").grid(row=1, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["text_color"], self.default_settings["text_color"], "white", "black", "red", "blue", "green").grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Font Size:").grid(row=2, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=10, to=50, width=10, textvariable=vars["font_size"]).grid(row=2, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default DPI:").grid(row=3, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=100, to=600, width=10, textvariable=vars["dpi"]).grid(row=3, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Checkbutton(frame, text="Default Only Images", variable=vars["only_images"]).grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        ttk.Checkbutton(frame, text="Enable Logging", variable=vars["logger_enabled"]).grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+
+        def save():
+            try:
+                font_size = int(vars["font_size"].get())
+                dpi = int(vars["dpi"].get())
+                if not (10 <= font_size <= 50 and 100 <= dpi <= 600):
+                    raise ValueError("Font size 10-50, DPI 100-600")
+                new_defaults = {k: v.get() for k, v in vars.items()}
+                self.default_settings = new_defaults
+                self.save_defaults(new_defaults)
+                self.settings_frame.mode_var.set(new_defaults["mode"])
+                self.settings_frame.color_var.set(new_defaults["text_color"])
+                self.settings_frame.font_size_var.set(new_defaults["font_size"])
+                self.settings_frame.dpi_var.set(new_defaults["dpi"])
+                self.settings_frame.only_images_var.set(new_defaults["only_images"])
+                self.logger_enabled.set(new_defaults["logger_enabled"])
+                messagebox.showinfo("Defaults Saved", "Default settings updated.")
+                dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", str(e))
+
+        ttk.Button(frame, text="Save", command=save).grid(row=6, column=0, padx=10, pady=15)
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).grid(row=6, column=1, padx=10, pady=15)
+
+        dialog.update_idletasks()
+        width = frame.winfo_reqwidth() + 20
+        height = frame.winfo_reqheight() + 20
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+    def copy_images(self, images, test_mode, original_text, equations):
+        configure_logging(self.logger_enabled.get())
+        if not images:
+            logging.info("No images to copy")
+            return
+        self.last_images = [img for img in images if img and not is_image_empty(img)]
+        self.last_text = original_text
+        self.last_equations = equations
+
+        html_content = (
+            "<style>"
+            f"body {{color: {self.settings_frame.color_var.get()}; font-family: Arial, sans-serif; font-size: {self.settings_frame.font_size_var.get()}pt; line-height: 1.5;}}"
+            "p, div, span {color: inherit !important;}"
+            "img {vertical-align: middle; margin: 2px 0;}"
+            "</style>"
+        )
+
+        if test_mode or (original_text and equations['matches']):
+            if self.settings_frame.only_images_var.get():
+                html_content += "".join(
+                    f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                    for img in self.last_images
+                )
+            else:
+                last_pos = 0
+                img_index = 0
+                for match in equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = html.escape(original_text[last_pos:start]).replace('\n', '<br>')
+                    html_content += f'<span>{text_segment}</span>'
+                    if img_index < len(self.last_images):
+                        html_content += f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(self.last_images[img_index])).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                        img_index += 1
+                    last_pos = end
+                html_content += f'<span>{html.escape(original_text[last_pos:]).replace("\n", "<br>")}</span>'
+        else:
+            html_content += "<br>".join(
+                f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                for img in self.last_images
+            )
+
+        try:
+            set_clipboard_html(html_content)
+            self.status_var.set(f"Copied {len(self.last_images)} images")
+            logging.info(f"Copied {len(self.last_images)} images")
+        except Exception as e:
+            logging.error(f"Failed to copy images: {e}")
+            self.status_var.set("Error copying images")
+
+    def monitor_clipboard(self):
+        configure_logging(self.logger_enabled.get())
+        last_sequence = None
+        while not self.stop_event.is_set():
+            try:
+                import win32clipboard
+                current_sequence = win32clipboard.GetClipboardSequenceNumber()
+                if current_sequence != last_sequence:
+                    last_sequence = current_sequence
+                    text = get_clipboard_text()
+                    if text:
+                        logging.info(f"New clipboard content: {text[:100]}...")
+                        equations = find_latex_equations(text)
+                        if equations['equations']:
+                            images = [
+                                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                                for eq in equations['equations']
+                            ]
+                            images = [img for img in images if img]
+                            if images:
+                                self.copy_images(images, False, text, equations)
+                            else:
+                                self.status_var.set("No valid images")
+                        else:
+                            self.status_var.set("No equations found")
+                time.sleep(1)
+            except Exception as e:
+                logging.error(f"Clipboard monitoring error: {e}")
+                self.status_var.set("Monitoring error")
+                time.sleep(1)
+
+    def on_closing(self):
+        if self.monitoring:
+            self.stop_event.set()
+            if self.monitor_thread:
+                self.monitor_thread.join(timeout=1.0)
+        self.root.destroy()
+        logging.info("Application closed")
+'''
+
+### src/gui/components.py
+'''python
+import tkinter as tk
+from tkinter import ttk
+import tkinter.font as tkfont
+
+def create_settings_frame(parent, defaults, logger_enabled, validate_inputs):
+    class SettingsFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Configuration", padding="5")
+            self.frame.grid(row=0, column=0, sticky="ew", pady=5)
+            self.frame.columnconfigure(1, weight=1)
+
+            menu_font = tkfont.Font(family="Arial", size=12)
+            self.mode_var = tk.StringVar(value=defaults["mode"])
+            self.color_var = tk.StringVar(value=defaults["text_color"])
+            self.font_size_var = tk.StringVar(value=defaults["font_size"])
+            self.dpi_var = tk.StringVar(value=defaults["dpi"])
+            self.only_images_var = tk.BooleanVar(value=defaults["only_images"])
+
+            ttk.Label(self.frame, text="Render Mode:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+            self.mode_menu = ttk.OptionMenu(self.frame, self.mode_var, defaults["mode"], "Matplotlib", "Standalone")
+            self.mode_menu["menu"].configure(font=menu_font)
+            self.mode_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="Text Color:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+            self.color_menu = ttk.OptionMenu(self.frame, self.color_var, defaults["text_color"], "white", "black", "red", "blue", "green")
+            self.color_menu["menu"].configure(font=menu_font)
+            self.color_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="Font Size:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+            self.font_size_spin = ttk.Spinbox(self.frame, from_=10, to=50, width=10, textvariable=self.font_size_var)
+            self.font_size_spin.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="DPI:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+            self.dpi_spin = ttk.Spinbox(self.frame, from_=100, to=600, width=10, textvariable=self.dpi_var)
+            self.dpi_spin.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+
+            self.only_images_check = ttk.Checkbutton(self.frame, text="Only Images", variable=self.only_images_var)
+            self.only_images_check.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+            self.logger_check = ttk.Checkbutton(self.frame, text="Enable Logging", variable=logger_enabled)
+            self.logger_check.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+    return SettingsFrame()
+
+def create_actions_frame(parent, toggle_monitoring, test_render, save_as_docx, open_defaults_dialog):
+    class ActionsFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Actions", padding="5")
+            self.frame.grid(row=1, column=0, sticky="ew", pady=5)
+
+            self.toggle_button = ttk.Button(self.frame, text="Start Monitoring", command=toggle_monitoring)
+            self.toggle_button.grid(row=0, column=0, padx=5, pady=5)
+
+            self.test_button = ttk.Button(self.frame, text="Test Render", command=test_render)
+            self.test_button.grid(row=0, column=1, padx=5, pady=5)
+
+            self.save_button = ttk.Button(self.frame, text="Save as DOCX", command=save_as_docx)
+            self.save_button.grid(row=0, column=2, padx=5, pady=5)
+
+            self.defaults_button = ttk.Button(self.frame, text="Defaults", command=open_defaults_dialog)
+            self.defaults_button.grid(row=0, column=3, padx=5, pady=5)
+
+    return ActionsFrame()
+
+def create_io_frame(parent, render_input_text):
+    class IOFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Input & Output", padding="5")
+            self.frame.grid(row=2, column=0, sticky="nsew", pady=5)
+            self.frame.columnconfigure(0, weight=1)
+            self.frame.rowconfigure(1, weight=1)
+
+            ttk.Label(self.frame, text="Input Text:").grid(row=0, column=0, padx=5, pady=5, sticky="nw")
+            self.text_input = tk.Text(self.frame, height=5, width=50, font=("Arial", 12))
+            self.text_input.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+
+            self.render_button = ttk.Button(self.frame, text="Render Input", command=render_input_text)
+            self.render_button.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+
+            ttk.Label(self.frame, text="Note: White text may be invisible on white backgrounds.", foreground="red").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+            self.status_var = tk.StringVar(value="Stopped")
+            ttk.Label(self.frame, textvariable=self.status_var, foreground="red").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+
+    io = IOFrame()
+    return io.frame, io.text_input, io.status_var
+'''
+
+### src/utils/clipboard.py
+'''python
+import win32clipboard
+import logging
+import base64
+import re
+
+def set_clipboard_html(html_content):
+    if not html_content or not isinstance(html_content, str):
+        raise ValueError("HTML content must be non-empty string")
+    try:
+        CF_HTML = win32clipboard.RegisterClipboardFormat("HTML Format")
+        html_header = (
+            "Version:0.9\r\n"
+            "StartHTML:0000000105\r\n"
+            "EndHTML:{:010d}\r\n"
+            "StartFragment:0000000141\r\n"
+            "EndFragment:{:010d}\r\n"
+            "<html><body>\r\n"
+            "<!--StartFragment-->{}<!--EndFragment-->\r\n"
+            "</body></html>"
+        )
+        fragment = html_content
+        full_html = html_header.format(
+            len(html_header) + len(fragment),
+            len(html_header) + len(fragment) - len("<!--EndFragment-->\r\n</body></html>"),
+            fragment
+        )
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(CF_HTML, full_html.encode('utf-8'))
+            logging.info("Set HTML to clipboard")
+        finally:
+            win32clipboard.CloseClipboard()
+    except Exception as e:
+        logging.error(f"Failed to set clipboard HTML: {e}")
+        raise
+
+def get_clipboard_text():
+    try:
+        win32clipboard.OpenClipboard()
+        if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+            text = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+            logging.info("Retrieved clipboard text")
+            return text
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get clipboard text: {e}")
+        return None
+    finally:
+        win32clipboard.CloseClipboard()
+
+def validate_base64(data):
+    try:
+        if not re.match(r'^[A-Za-z0-9+/=]+$', data):
+            return False
+        base64.b64decode(data, validate=True)
+        return True
+    except Exception as e:
+        logging.error(f"Base64 validation failed: {e}")
+        return False
+'''
+
+### src/utils/image.py
+'''python
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+import io
+import logging
+import subprocess
+import os
+import tempfile
+
+def image_to_bytes(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+def is_image_empty(image):
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    img_array = np.array(image)
+    return np.sum(img_array[:, :, 3] > 0) < 100
+
+def render_latex_to_image(latex_string, text_color, font_size, dpi, mode="Matplotlib"):
+    return render_latex_matplotlib(latex_string, text_color, font_size, dpi) if mode == "Matplotlib" else render_latex_standalone(latex_string, text_color, font_size, dpi)
+
+def render_latex_matplotlib(latex_string, text_color, font_size, dpi):
+    try:
+        scaled_font_size = font_size * (dpi / 100)
+        fig = plt.figure(figsize=(12, 3), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.text(0.5, 0.5, f"${latex_string}$", fontsize=scaled_font_size, color=text_color, ha='center', va='center', transform=ax.transAxes)
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=dpi, transparent=True, bbox_inches='tight', pad_inches=0.05)
+        plt.close(fig)
+        buffer.seek(0)
+        img = Image.open(buffer).convert("RGBA")
+        bbox = img.getbbox()
+        if not bbox:
+            return None
+        left, top, right, bottom = bbox
+        padding = max(5, dpi // 20)
+        img = img.crop((max(0, left - padding), max(0, top - padding), min(img.width, right + padding), min(img.height, bottom + padding)))
+        if img.width > 1800 or img.height > 600:
+            aspect = img.width / img.height
+            new_width = 1800 if img.width > 1800 else int(aspect * 600)
+            new_height = 600 if img.height > 600 else int(1800 / aspect)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+        return None if is_image_empty(img) else img
+    except Exception as e:
+        logging.error(f"Matplotlib render failed: {e}")
+        return None
+
+def render_latex_standalone(latex_string, text_color, font_size, dpi):
+    tex_template = r"""
+    \documentclass[preview]{standalone}
+    \usepackage{amsmath}
+    \usepackage{xcolor}
+    \begin{document}
+    \fontsize{%dpt}{%dpt}\selectfont
+    \color{%s}
+    $%s$
+    \end{document}
+    """
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_path = os.path.join(temp_dir, "temp.tex")
+            dvi_path = os.path.join(temp_dir, "temp.dvi")
+            png_path = os.path.join(temp_dir, "temp.png")
+            scaled_font_size = int(font_size * (dpi / 100))
+            with open(tex_path, 'w', encoding='utf-8') as f:
+                f.write(tex_template % (scaled_font_size, int(scaled_font_size * 1.2), text_color, latex_string))
+            subprocess.run(["latex", "-interaction=nonstopmode", "-output-directory", temp_dir, tex_path], check=True, capture_output=True, text=True)
+            subprocess.run(["dvipng", "-D", str(dpi), "-T", "tight", "-bg", "Transparent", "-o", png_path, dvi_path], check=True, capture_output=True, text=True)
+            img = Image.open(png_path).convert("RGBA")
+            bbox = img.getbbox()
+            if not bbox:
+                return None
+            left, top, right, bottom = bbox
+            padding = max(5, dpi // 20)
+            img = img.crop((max(0, left - padding), max(0, top - padding), min(img.width, right + padding), min(img.height, bottom + padding)))
+            if img.width > 1800 or img.height > 600:
+                aspect = img.width / img.height
+                new_width = 1800 if img.width > 1800 else int(aspect * 600)
+                new_height = 600 if img.height > 600 else int(1800 / aspect)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+            return None if is_image_empty(img) else img
+    except Exception as e:
+        logging.error(f"Standalone render failed: {e}")
+        return None
+'''
+
+### src/utils/latex.py
+'''python
+import re
+import logging
+import subprocess
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+def check_latex():
+    try:
+        plt.figure()
+        plt.text(0.5, 0.5, r'$\alpha$', fontsize=12, ha='center', va='center')
+        plt.axis('off')
+        plt.savefig('test_latex.png', format='png', dpi=100, bbox_inches='tight')
+        plt.close()
+        if os.path.exists('test_latex.png'):
+            os.remove('test_latex.png')
+        else:
+            return False
+        subprocess.run(["latex", "--version"], check=True, capture_output=True, text=True)
+        subprocess.run(["dvipng", "--version"], check=True, capture_output=True, text=True)
+        return True
+    except Exception as e:
+        logging.error(f"LaTeX check failed: {e}")
+        return False
+
+def find_latex_equations(text):
+    if not text:
+        return {'equations': [], 'matches': []}
+    patterns = [
+        (r'\\\[(.*?)\\\]', True),
+        (r'\\\((.*?)\\\)', False),
+        (r'\$\$(.*?)\$\$', True),
+        (r'\$(.*?)\$', False),
+        (r'\\begin\{equation\}(.*?)\\end\{equation\}', True)
+    ]
+    equations = []
+    matches = []
+    for pattern, is_display in patterns:
+        for match in re.finditer(pattern, text, re.DOTALL):
+            equation = match.group(1).strip()
+            if equation:
+                cleaned = equation.replace('\n', ' ').strip()
+                equations.append(cleaned)
+                matches.append({
+                    'start': match.start(),
+                    'end': match.end(),
+                    'equation': cleaned,
+                    'is_display': is_display,
+                    'raw_match': match.group(0)
+                })
+    matches.sort(key=lambda x: x['start'])
+    return {'equations': [m['equation'] for m in matches], 'matches': matches}
+'''
+
+### src/config/settings.py
+'''python
+import logging
+from logging.handlers import RotatingFileHandler
+
+LOGGING_CONFIG = {
+    'level': logging.INFO,
+    'handlers': [
+        RotatingFileHandler('./cache-and-logs/latex_clipboard.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()
+    ]
+}
+
+RC_PARAMS = {
+    'text.usetex': True,
+    'text.latex.preamble': r'\usepackage{amsmath}',
+    'font.family': 'serif',
+    'font.serif': ['Times'],
+    'axes.labelsize': 12,
+    'font.size': 12,
+    'legend.fontsize': 12,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+}
+
+def configure_logging(enabled):
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    if enabled:
+        for handler in LOGGING_CONFIG['handlers']:
+            logger.addHandler(handler)
+        logger.setLevel(LOGGING_CONFIG['level'])
+    else:
+        logger.addHandler(logging.NullHandler())
+'''
+
+### main.py
+'''python
+import ctypes
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+import tkinter as tk
+from src.config.settings import LOGGING_CONFIG, RC_PARAMS
+from src.gui.app_gui import LatexClipboardApp
+
+rcParams.update(RC_PARAMS)
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = LatexClipboardApp(root)
+    root.mainloop()
+'''
+
+### pack.py
+'''python
+import os
+import argparse
+from pathlib import Path
+import pathspec
+
+def load_gitignore(base_dir):
+    """Load .gitignore patterns using pathspec"""
+    gitignore_path = os.path.join(base_dir, '.gitignore')
+    if not os.path.exists(gitignore_path):
+        return None
+
+    with open(gitignore_path, 'r', encoding='utf-8') as f:
+        patterns = f.read().splitlines()
+
+    return pathspec.PathSpec.from_lines('gitwildmatch', patterns)
+
+def is_ignored(file_path, base_dir, spec):
+    """Check if the file is ignored by the gitignore spec"""
+    if spec is None:
+        return False
+    rel_path = os.path.relpath(file_path, base_dir)
+    return spec.match_file(rel_path)
+
+def detect_language(file_path):
+    """Detect language from file extension for code block markers."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.py':
+        return 'python'
+    elif ext == '.js':
+        return 'javascript'
+    elif ext == '.html':
+        return 'html'
+    elif ext == '.css':
+        return 'css'
+    else:
+        return ''  # Plain text or unknown
+
+def generate_structure(output_file, base_dir):
+    entries = []
+    spec = load_gitignore(base_dir)
+
+    # Walk through the directory
+    for root, _, files in os.walk(base_dir):
+        for file in files:
+            file_path = os.path.join(root, file)
+
+            # Skip files matching .gitignore
+            if is_ignored(file_path, base_dir, spec):
+                continue
+
+            # Calculate relative path from base_dir
+            rel_path = os.path.relpath(file_path, base_dir)
+
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+                continue
+
+            # Detect language for code block markers
+            language = detect_language(file_path)
+            if language:
+                block = f"'''{language}\n{content.rstrip()}\n'''"
+            else:
+                block = content.rstrip()
+
+            # Compose the entry
+            entry = f"### {rel_path}\n{block}"
+            entries.append(entry)
+
+    # Join all entries with two newlines for clarity
+    final_content = '\n\n'.join(entries)
+
+    # Write to the output file
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(final_content)
+        print(f"Structure written to {output_file}")
+    except Exception as e:
+        print(f"Error writing to {output_file}: {e}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Export file structure respecting .gitignore")
+    parser.add_argument('base_dir', help="Base directory to scan")
+    parser.add_argument('output_file', help="Output file (e.g., application_out.txt)")
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.base_dir):
+        print(f"Error: Directory {args.base_dir} does not exist")
+        return
+
+    generate_structure(args.output_file, args.base_dir)
+
+if __name__ == "__main__":
+    main()
+'''
+
+### puplication.py
+'''python
+```
+project_root/
+├── main.py
+├── requirements.txt
+├── run_app.bat
+├── src/
+│   ├── __init__.py
+│   ├── gui/
+│   │   ├── __init__.py
+│   │   ├── app_gui.py
+│   │   └── components.py
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── clipboard.py
+│   │   ├── image.py
+│   │   └── latex.py
+│   └── config/
+│       ├── __init__.py
+│       └── settings.py
+└── cache-and-logs/
+    └── latex_clipboard.log
+```
+
+### requirements.txt
+```
+matplotlib==3.8.0
+Pillow==10.4.0
+pywin32==306
+python-docx==1.1.2
+```
+
+### run_app.bat
+```
+@echo off
+ECHO Setting up and running LaTeX Clipboard Application...
+
+:: Check if Python is installed
+where python >nul 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Python is not installed or not in PATH. Please install Python 3.8+.
+    pause
+    exit /b 1
+)
+
+:: Create virtual environment if it doesn't exist
+IF NOT EXIST "venv" (
+    ECHO Creating virtual environment...
+    python -m venv venv
+    IF %ERRORLEVEL% NEQ 0 (
+        ECHO Failed to create virtual environment.
+        pause
+        exit /b 1
+    )
+)
+
+:: Activate virtual environment
+CALL venv\Scripts\activate.bat
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to activate virtual environment.
+    pause
+    exit /b 1
+)
+
+:: Install dependencies
+ECHO Installing dependencies from requirements.txt...
+pip install -r requirements.txt
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to install dependencies.
+    pause
+    exit /b 1
+)
+
+:: Run the application
+ECHO Starting LaTeX Clipboard Application...
+python main.py
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Application failed to start.
+    pause
+    exit /b 1
+)
+
+:: Deactivate virtual environment
+deactivate
+ECHO Application closed.
+pause
+```
+
+### main.py (Unchanged)
+```python
+import ctypes
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+import tkinter as tk
+from src.config.settings import LOGGING_CONFIG, RC_PARAMS
+from src.gui.app_gui import LatexClipboardApp
+
+rcParams.update(RC_PARAMS)
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = LatexClipboardApp(root)
+    root.mainloop()
+```
+
+### src/gui/app_gui.py (Unchanged)
+```python
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
+import sys
+import logging
+import os
+import json
+from .components import create_settings_frame, create_actions_frame, create_io_frame
+from src.utils.clipboard import set_clipboard_html, get_clipboard_text
+from src.utils.latex import check_latex, find_latex_equations
+from src.utils.image import render_latex_to_image
+from src.config.settings import configure_logging
+
+class LatexClipboardApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("LaTeX Clipboard Monitor")
+        self.monitoring = False
+        self.monitor_thread = None
+        self.stop_event = threading.Event()
+        self.last_images = []
+        self.last_text = ""
+        self.last_equations = None
+        self.defaults_file = os.path.join("configs", "defaults.json")
+        self.logger_enabled = tk.BooleanVar(value=True)
+
+        if not check_latex():
+            messagebox.showerror("LaTeX Not Found", "LaTeX distribution (e.g., MiKTeX) with latex and dvipng required.")
+            sys.exit(1)
+
+        configure_logging(self.logger_enabled.get())
+        self.load_defaults()
+        self.root.state('normal')
+        self.root.attributes('-topmost', True)
+        self.root.update()
+        self.root.attributes('-topmost', False)
+        self.root.focus_force()
+
+        self.create_gui()
+        logging.info("Application initialized.")
+
+    def load_defaults(self):
+        defaults = {
+            "mode": "Matplotlib",
+            "text_color": "white",
+            "font_size": "12",
+            "dpi": "300",
+            "only_images": False,
+            "logger_enabled": True
+        }
+        try:
+            if os.path.exists(self.defaults_file):
+                with open(self.defaults_file, 'r') as f:
+                    loaded = json.load(f)
+                defaults.update({k: v for k, v in loaded.items() if k in defaults})
+                logging.info(f"Loaded defaults: {defaults}")
+            else:
+                logging.info("Using fallback defaults")
+        except Exception as e:
+            logging.error(f"Failed to load defaults: {e}")
+        self.default_settings = defaults
+        self.logger_enabled.set(defaults["logger_enabled"])
+
+    def save_defaults(self, settings):
+        try:
+            os.makedirs(os.path.dirname(self.defaults_file), exist_ok=True)
+            with open(self.defaults_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+            logging.info(f"Saved defaults: {settings}")
+        except Exception as e:
+            logging.error(f"Failed to save defaults: {e}")
+            messagebox.showerror("Save Defaults Failed", f"Error: {e}")
+
+    def create_gui(self):
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self.settings_frame = create_settings_frame(main_frame, self.default_settings, self.logger_enabled, self.validate_inputs)
+        self.actions_frame = create_actions_frame(main_frame, self.toggle_monitoring, self.test_render, self.save_as_docx, self.open_defaults_dialog)
+        self.io_frame, self.text_input, self.status_var = create_io_frame(main_frame, self.render_input_text)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def validate_inputs(self, font_size_var, dpi_var):
+        try:
+            font_size = int(font_size_var.get())
+            dpi = int(dpi_var.get())
+            if not (10 <= font_size <= 50):
+                raise ValueError("Font size must be 10-50")
+            if not (100 <= dpi <= 600):
+                raise ValueError("DPI must be 100-600")
+            return True
+        except ValueError as e:
+            logging.error(f"Input validation failed: {e}")
+            messagebox.showerror("Invalid Input", str(e))
+            return False
+
+    def toggle_monitoring(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.monitoring:
+            if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+                return
+            self.monitoring = True
+            self.status_var.set("Monitoring")
+            self.actions_frame.toggle_button.configure(text="Stop Monitoring")
+            self.disable_gui()
+            self.stop_event.clear()
+            self.root.after(1000, self.start_monitor_thread)
+            logging.info("Started clipboard monitoring")
+        else:
+            self.monitoring = False
+            self.status_var.set("Stopped")
+            self.actions_frame.toggle_button.configure(text="Start Monitoring")
+            self.enable_gui()
+            self.stop_event.set()
+            logging.info("Stopped clipboard monitoring")
+
+    def disable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="disabled")
+
+    def enable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="normal")
+
+    def start_monitor_thread(self):
+        self.monitor_thread = threading.Thread(target=self.monitor_clipboard, daemon=True)
+        self.monitor_thread.start()
+
+    def render_input_text(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        text = self.text_input.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showwarning("No Input", "Please enter text to render.")
+            return
+        self.process_text(text, "input")
+
+    def test_render(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        from templates.test_string import TEST_STRING
+        self.process_text(TEST_STRING, "test")
+
+    def process_text(self, text, mode):
+        logging.info(f"Rendering {mode} text: {text[:100]}...")
+        try:
+            equations = find_latex_equations(text)
+            images = [
+                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                for eq in equations['equations']
+            ]
+            images = [img for img in images if img]
+            if images:
+                self.copy_images(images, mode == "test", text, equations)
+                self.status_var.set(f"Copied {len(images)} images")
+                messagebox.showinfo(f"{mode.capitalize()} Render", f"Copied {len(images)} images")
+            else:
+                self.status_var.set("No valid images")
+                messagebox.showerror(f"{mode.capitalize()} Render", "Failed to render images")
+        except Exception as e:
+            logging.error(f"{mode.capitalize()} render failed: {e}")
+            messagebox.showerror(f"{mode.capitalize()} Render Failed", f"Error: {e}")
+            self.status_var.set(f"{mode.capitalize()} render failed")
+
+    def save_as_docx(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.last_images:
+            messagebox.showwarning("No Images", "No images available to save.")
+            return
+        from docx import Document
+        from docx.shared import Pt
+        import filedialog
+        file_path = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Documents", "*.docx")])
+        if not file_path:
+            return
+        try:
+            doc = Document()
+            only_images = self.settings_frame.only_images_var.get()
+            if only_images or not self.last_text or not self.last_equations['matches']:
+                for img in self.last_images:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        img.save(tmp.name, format='PNG')
+                        doc.add_picture(tmp.name, width=Pt(300))
+                        os.unlink(tmp.name)
+            else:
+                last_pos = 0
+                img_index = 0
+                font_size = int(self.settings_frame.font_size_var.get())
+                for match in self.last_equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = self.last_text[last_pos:start].strip()
+                    if text_segment:
+                        doc.add_paragraph(text_segment).runs[0].font.size = Pt(font_size)
+                    if img_index < len(self.last_images):
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                            self.last_images[img_index].save(tmp.name, format='PNG')
+                            doc.add_paragraph().add_run().add_picture(tmp.name, width=Pt(300))
+                            os.unlink(tmp.name)
+                        img_index += 1
+                    last_pos = end
+                if remaining := self.last_text[last_pos:].strip():
+                    doc.add_paragraph(remaining).runs[0].font.size = Pt(font_size)
+            doc.save(file_path)
+            logging.info(f"Saved DOCX to {file_path}")
+            messagebox.showinfo("Save Successful", f"Saved to {file_path}")
+            os.startfile(file_path)
+        except Exception as e:
+            logging.error(f"Failed to save DOCX: {e}")
+            messagebox.showerror("Save Failed", f"Error: {e}")
+
+    def open_defaults_dialog(self):
+        configure_logging(self.logger_enabled.get())
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Set Default Settings")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding="15")
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        vars = {
+            "mode": tk.StringVar(value=self.default_settings["mode"]),
+            "text_color": tk.StringVar(value=self.default_settings["text_color"]),
+            "font_size": tk.StringVar(value=self.default_settings["font_size"]),
+            "dpi": tk.StringVar(value=self.default_settings["dpi"]),
+            "only_images": tk.BooleanVar(value=self.default_settings["only_images"]),
+            "logger_enabled": tk.BooleanVar(value=self.default_settings["logger_enabled"])
+        }
+
+        ttk.Label(frame, text="Default Render Mode:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["mode"], self.default_settings["mode"], "Matplotlib", "Standalone").grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Text Color:").grid(row=1, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["text_color"], self.default_settings["text_color"], "white", "black", "red", "blue", "green").grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Font Size:").grid(row=2, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=10, to=50, width=10, textvariable=vars["font_size"]).grid(row=2, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default DPI:").grid(row=3, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=100, to=600, width=10, textvariable=vars["dpi"]).grid(row=3, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Checkbutton(frame, text="Default Only Images", variable=vars["only_images"]).grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        ttk.Checkbutton(frame, text="Enable Logging", variable=vars["logger_enabled"]).grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+
+        def save():
+            try:
+                font_size = int(vars["font_size"].get())
+                dpi = int(vars["dpi"].get())
+                if not (10 <= font_size <= 50 and 100 <= dpi <= 600):
+                    raise ValueError("Font size 10-50, DPI 100-600")
+                new_defaults = {k: v.get() for k, v in vars.items()}
+                self.default_settings = new_defaults
+                self.save_defaults(new_defaults)
+                self.settings_frame.mode_var.set(new_defaults["mode"])
+                self.settings_frame.color_var.set(new_defaults["text_color"])
+                self.settings_frame.font_size_var.set(new_defaults["font_size"])
+                self.settings_frame.dpi_var.set(new_defaults["dpi"])
+                self.settings_frame.only_images_var.set(new_defaults["only_images"])
+                self.logger_enabled.set(new_defaults["logger_enabled"])
+                messagebox.showinfo("Defaults Saved", "Default settings updated.")
+                dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", str(e))
+
+        ttk.Button(frame, text="Save", command=save).grid(row=6, column=0, padx=10, pady=15)
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).grid(row=6, column=1, padx=10, pady=15)
+
+        dialog.update_idletasks()
+        width = frame.winfo_reqwidth() + 20
+        height = frame.winfo_reqheight() + 20
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+    def copy_images(self, images, test_mode, original_text, equations):
+        configure_logging(self.logger_enabled.get())
+        if not images:
+            logging.info("No images to copy")
+            return
+        self.last_images = [img for img in images if img and not is_image_empty(img)]
+        self.last_text = original_text
+        self.last_equations = equations
+
+        html_content = (
+            "<style>"
+            f"body {{color: {self.settings_frame.color_var.get()}; font-family: Arial, sans-serif; font-size: {self.settings_frame.font_size_var.get()}pt; line-height: 1.5;}}"
+            "p, div, span {color: inherit !important;}"
+            "img {vertical-align: middle; margin: 2px 0;}"
+            "</style>"
+        )
+
+        if test_mode or (original_text and equations['matches']):
+            if self.settings_frame.only_images_var.get():
+                html_content += "".join(
+                    f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                    for img in self.last_images
+                )
+            else:
+                last_pos = 0
+                img_index = 0
+                for match in equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = html.escape(original_text[last_pos:start]).replace('\n', '<br>')
+                    html_content += f'<span>{text_segment}</span>'
+                    if img_index < len(self.last_images):
+                        html_content += f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(self.last_images[img_index])).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                        img_index += 1
+                    last_pos = end
+                html_content += f'<span>{html.escape(original_text[last_pos:]).replace("\n", "<br>")}</span>'
+        else:
+            html_content += "<br>".join(
+                f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                for img in self.last_images
+            )
+
+        try:
+            set_clipboard_html(html_content)
+            self.status_var.set(f"Copied {len(self.last_images)} images")
+            logging.info(f"Copied {len(self.last_images)} images")
+        except Exception as e:
+            logging.error(f"Failed to copy images: {e}")
+            self.status_var.set("Error copying images")
+
+    def monitor_clipboard(self):
+        configure_logging(self.logger_enabled.get())
+        last_sequence = None
+        while not self.stop_event.is_set():
+            try:
+                import win32clipboard
+                current_sequence = win32clipboard.GetClipboardSequenceNumber()
+                if current_sequence != last_sequence:
+                    last_sequence = current_sequence
+                    text = get_clipboard_text()
+                    if text:
+                        logging.info(f"New clipboard content: {text[:100]}...")
+                        equations = find_latex_equations(text)
+                        if equations['equations']:
+                            images = [
+                                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                                for eq in equations['equations']
+                            ]
+                            images = [img for img in images if img]
+                            if images:
+                                self.copy_images(images, False, text, equations)
+                            else:
+                                self.status_var.set("No valid images")
+                        else:
+                            self.status_var.set("No equations found")
+                time.sleep(1)
+            except Exception as e:
+                logging.error(f"Clipboard monitoring error: {e}")
+                self.status_var.set("Monitoring error")
+                time.sleep(1)
+
+    def on_closing(self):
+        if self.monitoring:
+            self.stop_event.set()
+            if self.monitor_thread:
+                self.monitor_thread.join(timeout=1.0)
+        self.root.destroy()
+        logging.info("Application closed")
+```
+
+### src/gui/components.py (Unchanged)
+```python
+import tkinter as tk
+from tkinter import ttk
+import tkinter.font as tkfont
+
+def create_settings_frame(parent, defaults, logger_enabled, validate_inputs):
+    class-organize code into a `src` directory with submodules (`gui`, `utils`, `config`) for better modularity.
+   - Split GUI code into `app_gui.py` (core logic) and `components.py` (widget creation) to reduce file size and improve readability.
+   - Renamed utility files for clarity (e.g., `clipboard_utils.py` → `clipboard.py`).
+
+3. **Code Quality**:
+   - Reduced repetition in GUI creation by extracting widget setup into `components.py`.
+   - Simplified clipboard monitoring by consolidating logic and removing redundant checks.
+   - Improved error handling and logging consistency across modules.
+   - Used class-based structures for GUI frames to encapsulate related widgets and variables.
+   - Streamlined defaults management by integrating logger settings into the defaults dictionary.
+
+4. **Removed Debug Saving**:
+   - Eliminated debug image saving (e.g., `debug_eq_*.png`) since logging is now optional and saving was redundant.
+   - Temporary files for DOCX saving are handled with `tempfile.NamedTemporaryFile` for cleaner resource management.
+
+5. **GUI Enhancements**:
+   - Added the logging toggle checkbox to both the main settings frame and defaults dialog.
+   - Simplified tooltip implementation by removing unnecessary bindings (to reduce complexity, as they weren't critical).
+   - Consolidated GUI styling into `components.py` for consistency.
+
+### Notes
+- The `templates.test_string` module is assumed to exist as in the original code. Ensure `TEST_STRING` is defined there.
+- The `cache-and-logs` directory should exist for logging (if enabled). The application creates it automatically for defaults saving.
+- The logging toggle affects both file and console output. When disabled, a `NullHandler` ensures no logging occurs.
+- The code maintains all original functionality (e.g., Matplotlib/Standalone rendering, DOCX saving, clipboard monitoring) while adding the requested toggle.
+
+To use the updated application:
+1. Place the files in the described structure.
+2. Ensure dependencies (`matplotlib`, `pillow`, `pywin32`, `python-docx`) and LaTeX (MiKTeX) are installed.
+3. Run `main.py`. The GUI will include an "Enable Logging" checkbox to toggle logging and saving.
+
+Let me know if you need further refinements or additional features!
+'''
+
+### requirements.txt
+matplotlib
+Pillow
+pywin32
+python-docx
+
+### run.bat
+@echo off
+ECHO Setting up and running LaTeX Clipboard Application...
+
+:: Check if Python is installed
+where python >nul 2>&1
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Python is not installed or not in PATH. Please install Python 3.8+.
+    pause
+    exit /b 1
+)
+
+:: Create virtual environment if it doesn't exist
+IF NOT EXIST "venv" (
+    ECHO Creating virtual environment...
+    python -m venv venv
+    IF %ERRORLEVEL% NEQ 0 (
+        ECHO Failed to create virtual environment.
+        pause
+        exit /b 1
+    )
+)
+
+:: Activate virtual environment
+CALL venv\Scripts\activate.bat
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to activate virtual environment.
+    pause
+    exit /b 1
+)
+
+:: Install dependencies
+ECHO Installing dependencies from requirements.txt...
+pip install -r requirements.txt
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Failed to install dependencies.
+    pause
+    exit /b 1
+)
+
+:: Run the application
+ECHO Starting LaTeX Clipboard Application...
+python main.py
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Application failed to start.
+    pause
+    exit /b 1
+)
+
+:: Deactivate virtual environment
+deactivate
+ECHO Application closed.
+pause'''
+
+### unpack.py
+'''python
+import os
+import re
+import argparse
+
+def create_file_structure(input_file):
+    # Read the input file
+    with open(input_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Split content by '###' delimiter
+    sections = content.split('###')[1:]  # Skip the initial file tree or empty section
+
+    # Process each section
+    for section in sections:
+        # Extract file path and content
+        lines = section.strip().split('\n')
+        if not lines:
+            continue
+
+        # First line after ### is the file path
+        file_path = lines[0].strip()
+
+        # Extract content, handling code block markers
+        content_lines = lines[1:]
+        if content_lines and content_lines[0].strip().startswith("'''python"):
+            # Remove the opening and closing code block markers
+            content_lines = content_lines[1:]  # Skip '''python
+            if content_lines and content_lines[-1].strip() == "'''":
+                content_lines = content_lines[:-1]  # Remove closing '''
+        elif content_lines and content_lines[0].strip() == '```python':
+            # Handle ``` code blocks
+            content_lines = content_lines[1:]  # Skip ```python
+            if content_lines and content_lines[-1].strip() == '```':
+                content_lines = content_lines[:-1]  # Remove closing ```
+
+        # Join the content
+        file_content = '\n'.join(line.rstrip() for line in content_lines)
+
+        # Create directories if they don't exist
+        directory = os.path.dirname(file_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        # Write content to file
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(file_content)
+            print(f"Created file: {file_path}")
+        except Exception as e:
+            print(f"Error creating file {file_path}: {e}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Create file structure from application.txt-like file")
+    parser.add_argument('input_file', help="Path to the input file (e.g., application.txt)")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.input_file):
+        print(f"Error: Input file {args.input_file} does not exist")
+        return
+
+    create_file_structure(args.input_file)
+
+if __name__ == "__main__":
+    main()
+'''
+
+### src\config\settings.py
+'''python
+import logging
+from logging.handlers import RotatingFileHandler
+
+LOGGING_CONFIG = {
+    'level': logging.INFO,
+    'handlers': [
+        RotatingFileHandler('./cache-and-logs/latex_clipboard.log', maxBytes=10*1024*1024, backupCount=5),
+        logging.StreamHandler()
+    ]
+}
+
+RC_PARAMS = {
+    'text.usetex': True,
+    'text.latex.preamble': r'\usepackage{amsmath}',
+    'font.family': 'serif',
+    'font.serif': ['Times'],
+    'axes.labelsize': 12,
+    'font.size': 12,
+    'legend.fontsize': 12,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+}
+
+def configure_logging(enabled):
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    if enabled:
+        for handler in LOGGING_CONFIG['handlers']:
+            logger.addHandler(handler)
+        logger.setLevel(LOGGING_CONFIG['level'])
+    else:
+        logger.addHandler(logging.NullHandler())
+'''
+
+### src\gui\app_gui.py
+'''python
+import base64
+import html
+import tempfile
+import time
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import threading
+import sys
+import logging
+import os
+import json
+from .components import create_settings_frame, create_actions_frame, create_io_frame
+from src.utils.clipboard import set_clipboard_html, get_clipboard_text
+from src.utils.latex import check_latex, find_latex_equations
+from src.utils.image import render_latex_to_image, is_image_empty, image_to_bytes
+from src.config.settings import configure_logging
+
+class LatexClipboardApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("LaTeX Clipboard Monitor")
+        self.monitoring = False
+        self.monitor_thread = None
+        self.stop_event = threading.Event()
+        self.last_images = []
+        self.last_text = ""
+        self.last_equations = None
+        self.defaults_file = os.path.join("configs", "defaults.json")
+        self.logger_enabled = tk.BooleanVar(value=True)
+
+        if not check_latex():
+            messagebox.showerror("LaTeX Not Found", "LaTeX distribution (e.g., MiKTeX) with latex and dvipng required.")
+            sys.exit(1)
+
+        configure_logging(self.logger_enabled.get())
+        self.load_defaults()
+        self.root.state('normal')
+        self.root.attributes('-topmost', True)
+        self.root.update()
+        self.root.attributes('-topmost', False)
+        self.root.focus_force()
+
+        self.create_gui()
+        logging.info("Application initialized.")
+
+    def load_defaults(self):
+        defaults = {
+            "mode": "Matplotlib",
+            "text_color": "white",
+            "font_size": "12",
+            "dpi": "300",
+            "only_images": False,
+            "logger_enabled": True
+        }
+        try:
+            if os.path.exists(self.defaults_file):
+                with open(self.defaults_file, 'r') as f:
+                    loaded = json.load(f)
+                defaults.update({k: v for k, v in loaded.items() if k in defaults})
+                logging.info(f"Loaded defaults: {defaults}")
+            else:
+                logging.info("Using fallback defaults")
+        except Exception as e:
+            logging.error(f"Failed to load defaults: {e}")
+        self.default_settings = defaults
+        self.logger_enabled.set(defaults["logger_enabled"])
+
+    def save_defaults(self, settings):
+        try:
+            os.makedirs(os.path.dirname(self.defaults_file), exist_ok=True)
+            with open(self.defaults_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+            logging.info(f"Saved defaults: {settings}")
+        except Exception as e:
+            logging.error(f"Failed to save defaults: {e}")
+            messagebox.showerror("Save Defaults Failed", f"Error: {e}")
+
+    def create_gui(self):
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self.settings_frame = create_settings_frame(main_frame, self.default_settings, self.logger_enabled, self.validate_inputs)
+        self.actions_frame = create_actions_frame(main_frame, self.toggle_monitoring, self.test_render, self.save_as_docx, self.open_defaults_dialog)
+        self.io_frame, self.text_input, self.status_var = create_io_frame(main_frame, self.render_input_text)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def validate_inputs(self, font_size_var, dpi_var):
+        try:
+            font_size = int(font_size_var.get())
+            dpi = int(dpi_var.get())
+            if not (10 <= font_size <= 50):
+                raise ValueError("Font size must be 10-50")
+            if not (100 <= dpi <= 600):
+                raise ValueError("DPI must be 100-600")
+            return True
+        except ValueError as e:
+            logging.error(f"Input validation failed: {e}")
+            messagebox.showerror("Invalid Input", str(e))
+            return False
+
+    def toggle_monitoring(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.monitoring:
+            if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+                return
+            self.monitoring = True
+            self.status_var.set("Monitoring")
+            self.actions_frame.toggle_button.configure(text="Stop Monitoring")
+            self.disable_gui()
+            self.stop_event.clear()
+            self.root.after(1000, self.start_monitor_thread)
+            logging.info("Started clipboard monitoring")
+        else:
+            self.monitoring = False
+            self.status_var.set("Stopped")
+            self.actions_frame.toggle_button.configure(text="Start Monitoring")
+            self.enable_gui()
+            self.stop_event.set()
+            logging.info("Stopped clipboard monitoring")
+
+    def disable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="disabled")
+
+    def enable_gui(self):
+        for widget in [self.settings_frame.mode_menu, self.settings_frame.color_menu, self.settings_frame.font_size_spin,
+                       self.settings_frame.dpi_spin, self.actions_frame.test_button, self.actions_frame.save_button,
+                       self.actions_frame.defaults_button, self.io_frame.render_button, self.text_input]:
+            widget.configure(state="normal")
+
+    def start_monitor_thread(self):
+        self.monitor_thread = threading.Thread(target=self.monitor_clipboard, daemon=True)
+        self.monitor_thread.start()
+
+    def render_input_text(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        text = self.text_input.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showwarning("No Input", "Please enter text to render.")
+            return
+        self.process_text(text, "input")
+
+    def test_render(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.validate_inputs(self.settings_frame.font_size_var, self.settings_frame.dpi_var):
+            return
+        from templates.test_string import TEST_STRING
+        self.process_text(TEST_STRING, "test")
+
+    def process_text(self, text, mode):
+        logging.info(f"Rendering {mode} text: {text[:100]}...")
+        try:
+            equations = find_latex_equations(text)
+            images = [
+                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                for eq in equations['equations']
+            ]
+            images = [img for img in images if img]
+            if images:
+                self.copy_images(images, mode == "test", text, equations)
+                self.status_var.set(f"Copied {len(images)} images")
+                messagebox.showinfo(f"{mode.capitalize()} Render", f"Copied {len(images)} images")
+            else:
+                self.status_var.set("No valid images")
+                messagebox.showerror(f"{mode.capitalize()} Render", "Failed to render images")
+        except Exception as e:
+            logging.error(f"{mode.capitalize()} render failed: {e}")
+            messagebox.showerror(f"{mode.capitalize()} Render Failed", f"Error: {e}")
+            self.status_var.set(f"{mode.capitalize()} render failed")
+
+    def save_as_docx(self):
+        configure_logging(self.logger_enabled.get())
+        if not self.last_images:
+            messagebox.showwarning("No Images", "No images available to save.")
+            return
+        from docx import Document
+        from docx.shared import Pt
+        import filedialog
+        file_path = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Documents", "*.docx")])
+        if not file_path:
+            return
+        try:
+            doc = Document()
+            only_images = self.settings_frame.only_images_var.get()
+            if only_images or not self.last_text or not self.last_equations['matches']:
+                for img in self.last_images:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        img.save(tmp.name, format='PNG')
+                        doc.add_picture(tmp.name, width=Pt(300))
+                        os.unlink(tmp.name)
+            else:
+                last_pos = 0
+                img_index = 0
+                font_size = int(self.settings_frame.font_size_var.get())
+                for match in self.last_equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = self.last_text[last_pos:start].strip()
+                    if text_segment:
+                        doc.add_paragraph(text_segment).runs[0].font.size = Pt(font_size)
+                    if img_index < len(self.last_images):
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                            self.last_images[img_index].save(tmp.name, format='PNG')
+                            doc.add_paragraph().add_run().add_picture(tmp.name, width=Pt(300))
+                            os.unlink(tmp.name)
+                        img_index += 1
+                    last_pos = end
+                if remaining := self.last_text[last_pos:].strip():
+                    doc.add_paragraph(remaining).runs[0].font.size = Pt(font_size)
+            doc.save(file_path)
+            logging.info(f"Saved DOCX to {file_path}")
+            messagebox.showinfo("Save Successful", f"Saved to {file_path}")
+            os.startfile(file_path)
+        except Exception as e:
+            logging.error(f"Failed to save DOCX: {e}")
+            messagebox.showerror("Save Failed", f"Error: {e}")
+
+    def open_defaults_dialog(self):
+        configure_logging(self.logger_enabled.get())
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Set Default Settings")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding="15")
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        vars = {
+            "mode": tk.StringVar(value=self.default_settings["mode"]),
+            "text_color": tk.StringVar(value=self.default_settings["text_color"]),
+            "font_size": tk.StringVar(value=self.default_settings["font_size"]),
+            "dpi": tk.StringVar(value=self.default_settings["dpi"]),
+            "only_images": tk.BooleanVar(value=self.default_settings["only_images"]),
+            "logger_enabled": tk.BooleanVar(value=self.default_settings["logger_enabled"])
+        }
+
+        ttk.Label(frame, text="Default Render Mode:").grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["mode"], self.default_settings["mode"], "Matplotlib", "Standalone").grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Text Color:").grid(row=1, column=0, padx=10, pady=10, sticky="e")
+        ttk.OptionMenu(frame, vars["text_color"], self.default_settings["text_color"], "white", "black", "red", "blue", "green").grid(row=1, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default Font Size:").grid(row=2, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=10, to=50, width=10, textvariable=vars["font_size"]).grid(row=2, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Label(frame, text="Default DPI:").grid(row=3, column=0, padx=10, pady=10, sticky="e")
+        ttk.Spinbox(frame, from_=100, to=600, width=10, textvariable=vars["dpi"]).grid(row=3, column=1, padx=10, pady=10, sticky="w")
+
+        ttk.Checkbutton(frame, text="Default Only Images", variable=vars["only_images"]).grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+        ttk.Checkbutton(frame, text="Enable Logging", variable=vars["logger_enabled"]).grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+
+        def save():
+            try:
+                font_size = int(vars["font_size"].get())
+                dpi = int(vars["dpi"].get())
+                if not (10 <= font_size <= 50 and 100 <= dpi <= 600):
+                    raise ValueError("Font size 10-50, DPI 100-600")
+                new_defaults = {k: v.get() for k, v in vars.items()}
+                self.default_settings = new_defaults
+                self.save_defaults(new_defaults)
+                self.settings_frame.mode_var.set(new_defaults["mode"])
+                self.settings_frame.color_var.set(new_defaults["text_color"])
+                self.settings_frame.font_size_var.set(new_defaults["font_size"])
+                self.settings_frame.dpi_var.set(new_defaults["dpi"])
+                self.settings_frame.only_images_var.set(new_defaults["only_images"])
+                self.logger_enabled.set(new_defaults["logger_enabled"])
+                messagebox.showinfo("Defaults Saved", "Default settings updated.")
+                dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror("Invalid Input", str(e))
+
+        ttk.Button(frame, text="Save", command=save).grid(row=6, column=0, padx=10, pady=15)
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).grid(row=6, column=1, padx=10, pady=15)
+
+        dialog.update_idletasks()
+        width = frame.winfo_reqwidth() + 20
+        height = frame.winfo_reqheight() + 20
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+    def copy_images(self, images, test_mode, original_text, equations):
+        configure_logging(self.logger_enabled.get())
+        if not images:
+            logging.info("No images to copy")
+            return
+        self.last_images = [img for img in images if img and not is_image_empty(img)]
+        self.last_text = original_text
+        self.last_equations = equations
+
+        html_content = (
+            "<style>"
+            f"body {{color: {self.settings_frame.color_var.get()}; font-family: Arial, sans-serif; font-size: {self.settings_frame.font_size_var.get()}pt; line-height: 1.5;}}"
+            "p, div, span {color: inherit !important;}"
+            "img {vertical-align: middle; margin: 2px 0;}"
+            "</style>"
+        )
+
+        if test_mode or (original_text and equations['matches']):
+            if self.settings_frame.only_images_var.get():
+                html_content += "".join(
+                    f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                    for img in self.last_images
+                )
+            else:
+                last_pos = 0
+                img_index = 0
+                for match in equations['matches']:
+                    start, end = match['start'], match['end']
+                    text_segment = html.escape(original_text[last_pos:start]).replace('\n', '<br>')
+                    html_content += f'<span>{text_segment}</span>'
+                    if img_index < len(self.last_images):
+                        html_content += f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(self.last_images[img_index])).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                        img_index += 1
+                    last_pos = end
+                html_content += f'<span>{html.escape(original_text[last_pos:]).replace("\n", "<br>")}</span>'
+        else:
+            html_content += "<br>".join(
+                f'<img src="data:image/png;base64,{base64.b64encode(image_to_bytes(img)).decode()}" style="vertical-align: middle; margin: 2px 0;">'
+                for img in self.last_images
+            )
+
+        try:
+            set_clipboard_html(html_content)
+            self.status_var.set(f"Copied {len(self.last_images)} images")
+            logging.info(f"Copied {len(self.last_images)} images")
+        except Exception as e:
+            logging.error(f"Failed to copy images: {e}")
+            self.status_var.set("Error copying images")
+
+    def monitor_clipboard(self):
+        configure_logging(self.logger_enabled.get())
+        last_sequence = None
+        while not self.stop_event.is_set():
+            try:
+                import win32clipboard
+                current_sequence = win32clipboard.GetClipboardSequenceNumber()
+                if current_sequence != last_sequence:
+                    last_sequence = current_sequence
+                    text = get_clipboard_text()
+                    if text:
+                        logging.info(f"New clipboard content: {text[:100]}...")
+                        equations = find_latex_equations(text)
+                        if equations['equations']:
+                            images = [
+                                render_latex_to_image(eq, self.settings_frame.color_var.get(), int(self.settings_frame.font_size_var.get()),
+                                                      int(self.settings_frame.dpi_var.get()), mode=self.settings_frame.mode_var.get())
+                                for eq in equations['equations']
+                            ]
+                            images = [img for img in images if img]
+                            if images:
+                                self.copy_images(images, False, text, equations)
+                            else:
+                                self.status_var.set("No valid images")
+                        else:
+                            self.status_var.set("No equations found")
+                time.sleep(1)
+            except Exception as e:
+                logging.error(f"Clipboard monitoring error: {e}")
+                self.status_var.set("Monitoring error")
+                time.sleep(1)
+
+    def on_closing(self):
+        if self.monitoring:
+            self.stop_event.set()
+            if self.monitor_thread:
+                self.monitor_thread.join(timeout=1.0)
+        self.root.destroy()
+        logging.info("Application closed")
+'''
+
+### src\gui\components.py
+'''python
+import tkinter as tk
+from tkinter import ttk
+import tkinter.font as tkfont
+
+def create_settings_frame(parent, defaults, logger_enabled, validate_inputs):
+    class SettingsFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Configuration", padding="5")
+            self.frame.grid(row=0, column=0, sticky="ew", pady=5)
+            self.frame.columnconfigure(1, weight=1)
+
+            menu_font = tkfont.Font(family="Arial", size=12)
+            self.mode_var = tk.StringVar(value=defaults["mode"])
+            self.color_var = tk.StringVar(value=defaults["text_color"])
+            self.font_size_var = tk.StringVar(value=defaults["font_size"])
+            self.dpi_var = tk.StringVar(value=defaults["dpi"])
+            self.only_images_var = tk.BooleanVar(value=defaults["only_images"])
+
+            ttk.Label(self.frame, text="Render Mode:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+            self.mode_menu = ttk.OptionMenu(self.frame, self.mode_var, defaults["mode"], "Matplotlib", "Standalone")
+            self.mode_menu["menu"].configure(font=menu_font)
+            self.mode_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="Text Color:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+            self.color_menu = ttk.OptionMenu(self.frame, self.color_var, defaults["text_color"], "white", "black", "red", "blue", "green")
+            self.color_menu["menu"].configure(font=menu_font)
+            self.color_menu.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="Font Size:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+            self.font_size_spin = ttk.Spinbox(self.frame, from_=10, to=50, width=10, textvariable=self.font_size_var)
+            self.font_size_spin.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+            ttk.Label(self.frame, text="DPI:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+            self.dpi_spin = ttk.Spinbox(self.frame, from_=100, to=600, width=10, textvariable=self.dpi_var)
+            self.dpi_spin.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+
+            self.only_images_check = ttk.Checkbutton(self.frame, text="Only Images", variable=self.only_images_var)
+            self.only_images_check.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+            self.logger_check = ttk.Checkbutton(self.frame, text="Enable Logging", variable=logger_enabled)
+            self.logger_check.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+    return SettingsFrame()
+
+def create_actions_frame(parent, toggle_monitoring, test_render, save_as_docx, open_defaults_dialog):
+    class ActionsFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Actions", padding="5")
+            self.frame.grid(row=1, column=0, sticky="ew", pady=5)
+
+            self.toggle_button = ttk.Button(self.frame, text="Start Monitoring", command=toggle_monitoring)
+            self.toggle_button.grid(row=0, column=0, padx=5, pady=5)
+
+            self.test_button = ttk.Button(self.frame, text="Test Render", command=test_render)
+            self.test_button.grid(row=0, column=1, padx=5, pady=5)
+
+            self.save_button = ttk.Button(self.frame, text="Save as DOCX", command=save_as_docx)
+            self.save_button.grid(row=0, column=2, padx=5, pady=5)
+
+            self.defaults_button = ttk.Button(self.frame, text="Defaults", command=open_defaults_dialog)
+            self.defaults_button.grid(row=0, column=3, padx=5, pady=5)
+
+    return ActionsFrame()
+
+def create_io_frame(parent, render_input_text):
+    class IOFrame:
+        def __init__(self):
+            self.frame = ttk.LabelFrame(parent, text="Input & Output", padding="5")
+            self.frame.grid(row=2, column=0, sticky="nsew", pady=5)
+            self.frame.columnconfigure(0, weight=1)
+            self.frame.rowconfigure(1, weight=1)
+
+            ttk.Label(self.frame, text="Input Text:").grid(row=0, column=0, padx=5, pady=5, sticky="nw")
+            self.text_input = tk.Text(self.frame, height=5, width=50, font=("Arial", 12))
+            self.text_input.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+
+            self.render_button = ttk.Button(self.frame, text="Render Input", command=render_input_text)
+            self.render_button.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+
+            ttk.Label(self.frame, text="Note: White text may be invisible on white backgrounds.", foreground="red").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+            self.status_var = tk.StringVar(value="Stopped")
+            ttk.Label(self.frame, textvariable=self.status_var, foreground="red").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+
+    io = IOFrame()
+    return io.frame, io.text_input, io.status_var
+'''
+
+### src\utils\clipboard.py
+'''python
+import win32clipboard
+import logging
+import base64
+import re
+
+def set_clipboard_html(html_content):
+    if not html_content or not isinstance(html_content, str):
+        raise ValueError("HTML content must be non-empty string")
+    try:
+        CF_HTML = win32clipboard.RegisterClipboardFormat("HTML Format")
+        html_header = (
+            "Version:0.9\r\n"
+            "StartHTML:0000000105\r\n"
+            "EndHTML:{:010d}\r\n"
+            "StartFragment:0000000141\r\n"
+            "EndFragment:{:010d}\r\n"
+            "<html><body>\r\n"
+            "<!--StartFragment-->{}<!--EndFragment-->\r\n"
+            "</body></html>"
+        )
+        fragment = html_content
+        full_html = html_header.format(
+            len(html_header) + len(fragment),
+            len(html_header) + len(fragment) - len("<!--EndFragment-->\r\n</body></html>"),
+            fragment
+        )
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(CF_HTML, full_html.encode('utf-8'))
+            logging.info("Set HTML to clipboard")
+        finally:
+            win32clipboard.CloseClipboard()
+    except Exception as e:
+        logging.error(f"Failed to set clipboard HTML: {e}")
+        raise
+
+def get_clipboard_text():
+    try:
+        win32clipboard.OpenClipboard()
+        if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+            text = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+            logging.info("Retrieved clipboard text")
+            return text
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get clipboard text: {e}")
+        return None
+    finally:
+        win32clipboard.CloseClipboard()
+
+def validate_base64(data):
+    try:
+        if not re.match(r'^[A-Za-z0-9+/=]+$', data):
+            return False
+        base64.b64decode(data, validate=True)
+        return True
+    except Exception as e:
+        logging.error(f"Base64 validation failed: {e}")
+        return False
+'''
+
+### src\utils\image.py
+'''python
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+import io
+import logging
+import subprocess
+import os
+import tempfile
+
+def image_to_bytes(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+def is_image_empty(image):
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    img_array = np.array(image)
+    return np.sum(img_array[:, :, 3] > 0) < 100
+
+def render_latex_to_image(latex_string, text_color, font_size, dpi, mode="Matplotlib"):
+    return render_latex_matplotlib(latex_string, text_color, font_size, dpi) if mode == "Matplotlib" else render_latex_standalone(latex_string, text_color, font_size, dpi)
+
+def render_latex_matplotlib(latex_string, text_color, font_size, dpi):
+    try:
+        scaled_font_size = font_size * (dpi / 100)
+        fig = plt.figure(figsize=(12, 3), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.text(0.5, 0.5, f"${latex_string}$", fontsize=scaled_font_size, color=text_color, ha='center', va='center', transform=ax.transAxes)
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=dpi, transparent=True, bbox_inches='tight', pad_inches=0.05)
+        plt.close(fig)
+        buffer.seek(0)
+        img = Image.open(buffer).convert("RGBA")
+        bbox = img.getbbox()
+        if not bbox:
+            return None
+        left, top, right, bottom = bbox
+        padding = max(5, dpi // 20)
+        img = img.crop((max(0, left - padding), max(0, top - padding), min(img.width, right + padding), min(img.height, bottom + padding)))
+        if img.width > 1800 or img.height > 600:
+            aspect = img.width / img.height
+            new_width = 1800 if img.width > 1800 else int(aspect * 600)
+            new_height = 600 if img.height > 600 else int(1800 / aspect)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+        return None if is_image_empty(img) else img
+    except Exception as e:
+        logging.error(f"Matplotlib render failed: {e}")
+        return None
+
+def render_latex_standalone(latex_string, text_color, font_size, dpi):
+    tex_template = r"""
+    \documentclass[preview]{standalone}
+    \usepackage{amsmath}
+    \usepackage{xcolor}
+    \begin{document}
+    \fontsize{%dpt}{%dpt}\selectfont
+    \color{%s}
+    $%s$
+    \end{document}
+    """
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_path = os.path.join(temp_dir, "temp.tex")
+            dvi_path = os.path.join(temp_dir, "temp.dvi")
+            png_path = os.path.join(temp_dir, "temp.png")
+            scaled_font_size = int(font_size * (dpi / 100))
+            with open(tex_path, 'w', encoding='utf-8') as f:
+                f.write(tex_template % (scaled_font_size, int(scaled_font_size * 1.2), text_color, latex_string))
+            subprocess.run(["latex", "-interaction=nonstopmode", "-output-directory", temp_dir, tex_path], check=True, capture_output=True, text=True)
+            subprocess.run(["dvipng", "-D", str(dpi), "-T", "tight", "-bg", "Transparent", "-o", png_path, dvi_path], check=True, capture_output=True, text=True)
+            img = Image.open(png_path).convert("RGBA")
+            bbox = img.getbbox()
+            if not bbox:
+                return None
+            left, top, right, bottom = bbox
+            padding = max(5, dpi // 20)
+            img = img.crop((max(0, left - padding), max(0, top - padding), min(img.width, right + padding), min(img.height, bottom + padding)))
+            if img.width > 1800 or img.height > 600:
+                aspect = img.width / img.height
+                new_width = 1800 if img.width > 1800 else int(aspect * 600)
+                new_height = 600 if img.height > 600 else int(1800 / aspect)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+            return None if is_image_empty(img) else img
+    except Exception as e:
+        logging.error(f"Standalone render failed: {e}")
+        return None
+'''
+
+### src\utils\latex.py
+'''python
+import re
+import logging
+import subprocess
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+def check_latex():
+    try:
+        plt.figure()
+        plt.text(0.5, 0.5, r'$\alpha$', fontsize=12, ha='center', va='center')
+        plt.axis('off')
+        plt.savefig('test_latex.png', format='png', dpi=100, bbox_inches='tight')
+        plt.close()
+        if os.path.exists('test_latex.png'):
+            os.remove('test_latex.png')
+        else:
+            return False
+        subprocess.run(["latex", "--version"], check=True, capture_output=True, text=True)
+        subprocess.run(["dvipng", "--version"], check=True, capture_output=True, text=True)
+        return True
+    except Exception as e:
+        logging.error(f"LaTeX check failed: {e}")
+        return False
+
+def find_latex_equations(text):
+    if not text:
+        return {'equations': [], 'matches': []}
+    patterns = [
+        (r'\\\[(.*?)\\\]', True),
+        (r'\\\((.*?)\\\)', False),
+        (r'\$\$(.*?)\$\$', True),
+        (r'\$(.*?)\$', False),
+        (r'\\begin\{equation\}(.*?)\\end\{equation\}', True)
+    ]
+    equations = []
+    matches = []
+    for pattern, is_display in patterns:
+        for match in re.finditer(pattern, text, re.DOTALL):
+            equation = match.group(1).strip()
+            if equation:
+                cleaned = equation.replace('\n', ' ').strip()
+                equations.append(cleaned)
+                matches.append({
+                    'start': match.start(),
+                    'end': match.end(),
+                    'equation': cleaned,
+                    'is_display': is_display,
+                    'raw_match': match.group(0)
+                })
+    matches.sort(key=lambda x: x['start'])
+    return {'equations': [m['equation'] for m in matches], 'matches': matches}
+'''
+
+### templates\test_string.py
+'''python
+TEST_STRING = r"""
+To simplify the expression:
+
+Test equation: \[E=mc^{2^{2}}\] and another \( \int_0^1 x^2 dx = \frac{1}{3} \). Normal text follows: \[\sum M_A = 0\].
+
+To simplify the expression:
+
+\[
+\left( \frac{20}{x^2 - 36} - \frac{2}{x - 6} \right) \times \frac{1}{4 - x}
+\]
+
+we follow these steps:
+
+### Step 1: Factor the Denominators
+First, factor the denominators where possible.
+
+\[
+x^2 - 36 = (x - 6)(x + 6)
+\]
+
+So, the expression becomes:
+
+\[
+\left( \frac{20}{(x - 6)(x + 6)} - \frac{2}{x - 6} \right) \times \frac{1}{4 - x}
+\]
+
+### Step 2: Combine the Fractions Inside the Parentheses
+To combine the fractions, find a common denominator, which is \((x - 6)(x + 6)\).
+
+\[
+\frac{20}{(x - 6)(x + 6)} - \frac{2}{x - 6} = \frac{20 - 2(x + 6)}{(x - 6)(x + 6)}
+\]
+
+Simplify the numerator:
+
+\[
+20 - 2(x + 6) = 20 - 2x - 12 = 8 - 2x
+\]
+
+So, the combined fraction is:
+
+\[
+\frac{8 - 2x}{(x - 6)(x + 6)}
+\]
+
+### Step 3: Factor the Numerator
+Factor out a common term from the numerator:
+
+\[
+8 - 2x = 2(4 - x)
+\]
+
+Now, the expression becomes:
+
+\[
+\frac{2(4 - x)}{(x - 6)(x + 6)} \times \frac{1}{4 - x}
+\]
+
+### Step 4: Simplify the Expression
+Notice that \((4 - x)\) appears in both the numerator and the denominator, so they cancel out:
+
+\[
+\frac{2}{(x - 6)(x + 6)}
+\]
+
+### Final Answer
+The simplified form of the expression is:
+
+\[
+\boxed{\frac{2}{(x - 6)(x + 6)}}
+\]
+that i final
+"""
+'''

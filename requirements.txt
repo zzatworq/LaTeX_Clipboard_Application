@@ -1,0 +1,4 @@
+matplotlib
+Pillow
+pywin32
+python-docx
